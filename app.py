@@ -1,6 +1,6 @@
 from flask import Flask, jsonify, request
 import sqlite3
-from werkzeug.security import generate_password_hash
+from security import hash_password, verify_password
 
 app = Flask(__name__)
 DATABASE = 'recipe_box.db'
@@ -101,7 +101,7 @@ def delete_recipe(recipe_id):
     
     return jsonify({"message": "Recipe deleted successfully"}), 200
 
-# --- NEW REGISTER ROUTE ---
+# REGISTER a new user securely
 @app.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
@@ -113,8 +113,8 @@ def register():
     if not username or not email or not password:
         return jsonify({"error": "Missing username, email, or password"}), 400
 
-    # 2. Hash the password securely
-    hashed_password = generate_password_hash(password)
+    # 2. Hash the password securely using our new security.py file
+    hashed_password = hash_password(password)
 
     db = get_db()
     try:
@@ -129,6 +129,22 @@ def register():
         # Catches UNIQUE constraint error for duplicate username/email
         db.close()
         return jsonify({"error": "Username or email already taken"}), 409
+
+# --- DEBUG ROUTE FOR TESTING HASHING ---
+@app.route("/debug/password-test")
+def password_test():
+    password = "TestPassword123!"
+    stored_hash = hash_password(password)
+
+    correct = verify_password(stored_hash, "TestPassword123!")
+    wrong = verify_password(stored_hash, "WrongPassword")
+
+    return {
+        "password": "not returned",
+        "stored_hash": stored_hash,
+        "correct_candidate_result": correct,
+        "wrong_candidate_result": wrong,
+    }
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True)
