@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request
 import sqlite3
+from werkzeug.security import generate_password_hash
 
 app = Flask(__name__)
 DATABASE = 'recipe_box.db'
@@ -99,6 +100,35 @@ def delete_recipe(recipe_id):
     db.close()
     
     return jsonify({"message": "Recipe deleted successfully"}), 200
+
+# --- NEW REGISTER ROUTE ---
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    username = data.get('username')
+    email = data.get('email')
+    password = data.get('password')
+
+    # 1. Basic validation
+    if not username or not email or not password:
+        return jsonify({"error": "Missing username, email, or password"}), 400
+
+    # 2. Hash the password securely
+    hashed_password = generate_password_hash(password)
+
+    db = get_db()
+    try:
+        # 3. Insert the user with the HASH, not the real password
+        db.execute('INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)', 
+                   (username, email, hashed_password))
+        db.commit()
+        db.close()
+        return jsonify({"message": f"User {username} registered securely!"}), 201
+        
+    except sqlite3.IntegrityError:
+        # Catches UNIQUE constraint error for duplicate username/email
+        db.close()
+        return jsonify({"error": "Username or email already taken"}), 409
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True)
