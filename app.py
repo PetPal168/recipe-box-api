@@ -5,7 +5,6 @@ from security import hash_password, verify_password
 app = Flask(__name__)
 DATABASE = 'recipe_box.db'
 
-# Helper function to connect to the database
 def get_db():
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
@@ -15,130 +14,127 @@ def get_db():
 def home():
     return jsonify({"message": "Recipe Box API is running!"})
 
-# GET all recipes
+# --- RECIPE ROUTES ---
 @app.route('/recipes', methods=['GET'])
 def get_recipes():
     db = get_db()
-    try:
-        recipes = db.execute('SELECT * FROM recipes').fetchall()
-        db.close()
-        return jsonify([dict(recipe) for recipe in recipes]), 200
-    except sqlite3.OperationalError:
-        db.close()
-        return jsonify([]), 200
+    recipes = db.execute('SELECT * FROM recipes').fetchall()
+    db.close()
+    return jsonify([dict(recipe) for recipe in recipes]), 200
 
-# POST a new recipe
 @app.route('/recipes', methods=['POST'])
 def create_recipe():
     data = request.get_json()
     title = data.get('title')
     instructions = data.get('instructions')
-    
     if not title or not instructions:
         return jsonify({"error": "Missing title or instructions"}), 400
-        
     db = get_db()
-    try:
-        db.execute('INSERT INTO recipes (title, instructions) VALUES (?, ?)', (title, instructions))
-        db.commit()
-        db.close()
-        return jsonify({"message": "Recipe added successfully!"}), 201
-    except sqlite3.OperationalError as e:
-        db.close()
-        return jsonify({"error": f"Database error: {e}"}), 500
+    db.execute('INSERT INTO recipes (title, instructions) VALUES (?, ?)', (title, instructions))
+    db.commit()
+    db.close()
+    return jsonify({"message": "Recipe added successfully!"}), 201
 
-# GET a single recipe by ID
 @app.route('/recipes/<int:recipe_id>', methods=['GET'])
 def get_single_recipe(recipe_id):
     db = get_db()
-    try:
-        recipe = db.execute('SELECT * FROM recipes WHERE id = ?', (recipe_id,)).fetchone()
-        db.close()
-        
-        if recipe:
-            return jsonify(dict(recipe)), 200
-        else:
-            return jsonify({"error": "Recipe not found"}), 404
-            
-    except sqlite3.OperationalError:
-        db.close()
-        return jsonify({"error": "Table not found. Did you run init_db.py?"}), 500
+    recipe = db.execute('SELECT * FROM recipes WHERE id = ?', (recipe_id,)).fetchone()
+    db.close()
+    if recipe:
+        return jsonify(dict(recipe)), 200
+    return jsonify({"error": "Recipe not found"}), 404
 
-# PUT (Update) a recipe by ID - The vulnerability
 @app.route('/recipes/<int:recipe_id>', methods=['PUT'])
 def update_recipe(recipe_id):
     data = request.get_json()
     title = data.get('title')
     instructions = data.get('instructions')
-    
     db = get_db()
     recipe = db.execute('SELECT * FROM recipes WHERE id = ?', (recipe_id,)).fetchone()
-    
     if not recipe:
         db.close()
         return jsonify({"error": "Recipe not found"}), 404
-        
-    db.execute('UPDATE recipes SET title = ?, instructions = ? WHERE id = ?', 
-               (title, instructions, recipe_id))
+    db.execute('UPDATE recipes SET title = ?, instructions = ? WHERE id = ?', (title, instructions, recipe_id))
     db.commit()
     db.close()
-    
     return jsonify({"message": "Recipe updated successfully"}), 200
 
-# DELETE a recipe by ID - The vulnerability
 @app.route('/recipes/<int:recipe_id>', methods=['DELETE'])
 def delete_recipe(recipe_id):
     db = get_db()
     recipe = db.execute('SELECT * FROM recipes WHERE id = ?', (recipe_id,)).fetchone()
-    
     if not recipe:
         db.close()
         return jsonify({"error": "Recipe not found"}), 404
-        
     db.execute('DELETE FROM recipes WHERE id = ?', (recipe_id,))
     db.commit()
     db.close()
-    
     return jsonify({"message": "Recipe deleted successfully"}), 200
 
-# REGISTER a new user securely
-@app.route('/register', methods=['POST'])
+# --- AUTHENTICATION ROUTES ---
+@app.route("/register", methods=["POST"])
 def register():
-    data = request.get_json()
-    username = data.get('username')
-    email = data.get('email')
-    password = data.get('password')
+    data = request.get_json() or {}
+    username = (data.get("username") or "").strip()
+    email = (data.get("email") or "").strip()
+    password = (data.get("password") or "").strip()
 
-    # 1. Basic validation
     if not username or not email or not password:
-        return jsonify({"error": "Missing username, email, or password"}), 400
+        return jsonify({"error": "Missing or blank username, email, or password"}), 400
 
-    # 2. Hash the password securely using our new security.py file
-    hashed_password = hash_password(password)
+    hashed_pw = hash_password(password)
+    db = get_db()
+    
+    try:
+        db.execute(
+            'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
+            (username, email, hashed_pw)
+        )
+        db.commit()
+        return jsonify({
+            "message": "User registered successfully",
+            "user": {
+                "username": username,
+                "email": email
+            }
+        }), 201
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Username or email already taken"}), 409
+    finally:
+        db.close()
+
+@app.route("/login", methods=["POST"])
+def login():
+    data = request.get_json() or {}
+    username = data.get("username")
+    password = data.get("password")
+
+    if not username or not password:
+        return jsonify({"error": "username and password are required"}), 400
 
     db = get_db()
-    try:
-        # 3. Insert the user with the HASH, not the real password
-        db.execute('INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)', 
-                   (username, email, hashed_password))
-        db.commit()
-        db.close()
-        return jsonify({"message": f"User {username} registered securely!"}), 201
-        
-    except sqlite3.IntegrityError:
-        # Catches UNIQUE constraint error for duplicate username/email
-        db.close()
-        return jsonify({"error": "Username or email already taken"}), 409
+    user = db.execute(
+        "SELECT id, username, password_hash FROM users WHERE username = ?",
+        (username,)
+    ).fetchone()
 
-# --- DEBUG ROUTE FOR TESTING HASHING ---
+    # Generic failure: unknown user OR wrong password -> same response
+    if user is None or not verify_password(user["password_hash"], password):
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    # Success: return identity, but never the password/hash
+    return jsonify({
+        "id": user["id"],
+        "username": user["username"]
+    }), 200
+
+# --- DEBUG ROUTE ---
 @app.route("/debug/password-test")
 def password_test():
     password = "TestPassword123!"
     stored_hash = hash_password(password)
-
     correct = verify_password(stored_hash, "TestPassword123!")
     wrong = verify_password(stored_hash, "WrongPassword")
-
     return {
         "password": "not returned",
         "stored_hash": stored_hash,
