@@ -1,8 +1,19 @@
+import os
+from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 import sqlite3
 from security import hash_password, verify_password
+from flask_jwt_extended import create_access_token, JWTManager
 
 app = Flask(__name__)
+
+# Load environment variables from the .env file
+load_dotenv()
+
+# Use the secret from the .env file, with a fallback just in case
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET', 'fallback-secret-key')
+jwt = JWTManager(app)
+
 DATABASE = 'recipe_box.db'
 
 def get_db():
@@ -117,20 +128,28 @@ def login():
         "SELECT id, username, password_hash FROM users WHERE username = ?",
         (username,)
     ).fetchone()
+    db.close()
 
     # Generic failure: unknown user OR wrong password -> same response
     if user is None or not verify_password(user["password_hash"], password):
         return jsonify({"error": "Invalid credentials"}), 401
 
-    # Success: return identity, but never the password/hash
+    # Generate the JWT token
+    access_token = create_access_token(identity=str(user["id"]))
+
+    # Success: return identity and token, but never the password/hash
     return jsonify({
-        "id": user["id"],
-        "username": user["username"]
+        "message": "Login successful",
+        "access_token": access_token,
+        "user": {
+            "id": user["id"],
+            "username": user["username"]
+        }
     }), 200
 
 # --- DEBUG ROUTE ---
 @app.route("/debug/password-test")
-def password_test():
+def debug_password_test():
     password = "TestPassword123!"
     stored_hash = hash_password(password)
     correct = verify_password(stored_hash, "TestPassword123!")
