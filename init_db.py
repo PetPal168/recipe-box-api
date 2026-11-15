@@ -4,12 +4,13 @@ import sqlite3
 conn = sqlite3.connect('recipe_box.db')
 cursor = conn.cursor()
 
-# Create the recipes table
+# Create the recipes table WITH owner_id
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS recipes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT NOT NULL,
-        instructions TEXT NOT NULL
+        instructions TEXT NOT NULL,
+        owner_id INTEGER
     )
 ''')
 
@@ -23,6 +24,14 @@ cursor.execute('''
     )
 ''')
 
+# Safely add owner_id to an existing recipes table if it's missing
+try:
+    cursor.execute("ALTER TABLE recipes ADD COLUMN owner_id INTEGER")
+    print("Added 'owner_id' column to existing recipes table.")
+except sqlite3.OperationalError:
+    # This error means the column already exists, which is fine!
+    pass
+
 conn.commit()
 conn.close()
-print("Database updated: recipes and users tables created successfully!")
+print("Database updated: recipes and users tables ready!")

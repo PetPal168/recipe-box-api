@@ -1,18 +1,25 @@
 import os
+from datetime import timedelta
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 import sqlite3
 from security import hash_password, verify_password
-from flask_jwt_extended import create_access_token, JWTManager
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, JWTManager
 
 app = Flask(__name__)
 
-# Load environment variables from the .env file
+# Load environment variables
 load_dotenv()
-
-# Use the secret from the .env file, with a fallback just in case
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET', 'fallback-secret-key')
 jwt = JWTManager(app)
+
+# --- JWT ERROR HANDLERS ---
+@jwt.expired_token_loader
+def my_expired_token_callback(jwt_header, jwt_payload):
+    return jsonify({
+        "error": "token_expired",
+        "message": "Token has expired, please log in again."
+    }), 401
 
 DATABASE = 'recipe_box.db'
 
@@ -34,14 +41,23 @@ def get_recipes():
     return jsonify([dict(recipe) for recipe in recipes]), 200
 
 @app.route('/recipes', methods=['POST'])
+@jwt_required()
 def create_recipe():
+    user_id = get_jwt_identity()
+    print(f"User ID {user_id} is creating a recipe!")
+
     data = request.get_json()
     title = data.get('title')
     instructions = data.get('instructions')
+    
     if not title or not instructions:
         return jsonify({"error": "Missing title or instructions"}), 400
+        
     db = get_db()
-    db.execute('INSERT INTO recipes (title, instructions) VALUES (?, ?)', (title, instructions))
+    db.execute(
+        'INSERT INTO recipes (title, instructions, owner_id) VALUES (?, ?, ?)', 
+        (title, instructions, user_id)
+    )
     db.commit()
     db.close()
     return jsonify({"message": "Recipe added successfully!"}), 201
@@ -56,27 +72,50 @@ def get_single_recipe(recipe_id):
     return jsonify({"error": "Recipe not found"}), 404
 
 @app.route('/recipes/<int:recipe_id>', methods=['PUT'])
+@jwt_required()
 def update_recipe(recipe_id):
-    data = request.get_json()
+    user_id = get_jwt_identity()
+    print(f"User ID {user_id} is trying to update recipe {recipe_id}")
+
+    data = request.get_json() or {}
     title = data.get('title')
     instructions = data.get('instructions')
+    
     db = get_db()
     recipe = db.execute('SELECT * FROM recipes WHERE id = ?', (recipe_id,)).fetchone()
+    
     if not recipe:
         db.close()
         return jsonify({"error": "Recipe not found"}), 404
+        
+    # OWNERSHIP CHECK
+    if recipe['owner_id'] is not None and str(recipe['owner_id']) != str(user_id):
+        db.close()
+        return jsonify({"error": "Forbidden: You do not own this recipe"}), 403
+        
     db.execute('UPDATE recipes SET title = ?, instructions = ? WHERE id = ?', (title, instructions, recipe_id))
     db.commit()
     db.close()
     return jsonify({"message": "Recipe updated successfully"}), 200
 
 @app.route('/recipes/<int:recipe_id>', methods=['DELETE'])
+@jwt_required()
 def delete_recipe(recipe_id):
+    user_id = get_jwt_identity()
+    print(f"User ID {user_id} is trying to delete recipe {recipe_id}")
+
     db = get_db()
     recipe = db.execute('SELECT * FROM recipes WHERE id = ?', (recipe_id,)).fetchone()
+    
     if not recipe:
         db.close()
         return jsonify({"error": "Recipe not found"}), 404
+        
+    # OWNERSHIP CHECK
+    if recipe['owner_id'] is not None and str(recipe['owner_id']) != str(user_id):
+        db.close()
+        return jsonify({"error": "Forbidden: You do not own this recipe"}), 403
+        
     db.execute('DELETE FROM recipes WHERE id = ?', (recipe_id,))
     db.commit()
     db.close()
@@ -130,14 +169,12 @@ def login():
     ).fetchone()
     db.close()
 
-    # Generic failure: unknown user OR wrong password -> same response
     if user is None or not verify_password(user["password_hash"], password):
         return jsonify({"error": "Invalid credentials"}), 401
 
-    # Generate the JWT token
-    access_token = create_access_token(identity=str(user["id"]))
+    # Normal 15-minute expiration
+    access_token = create_access_token(identity=str(user["id"]), expires_delta=timedelta(minutes=15))
 
-    # Success: return identity and token, but never the password/hash
     return jsonify({
         "message": "Login successful",
         "access_token": access_token,
@@ -146,20 +183,6 @@ def login():
             "username": user["username"]
         }
     }), 200
-
-# --- DEBUG ROUTE ---
-@app.route("/debug/password-test")
-def debug_password_test():
-    password = "TestPassword123!"
-    stored_hash = hash_password(password)
-    correct = verify_password(stored_hash, "TestPassword123!")
-    wrong = verify_password(stored_hash, "WrongPassword")
-    return {
-        "password": "not returned",
-        "stored_hash": stored_hash,
-        "correct_candidate_result": correct,
-        "wrong_candidate_result": wrong,
-    }
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True)
