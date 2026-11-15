@@ -14,13 +14,14 @@ cursor.execute('''
     )
 ''')
 
-# Create the users table
+# Create the users table WITH role
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
         email TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'user'
     )
 ''')
 
@@ -29,7 +30,13 @@ try:
     cursor.execute("ALTER TABLE recipes ADD COLUMN owner_id INTEGER")
     print("Added 'owner_id' column to existing recipes table.")
 except sqlite3.OperationalError:
-    # This error means the column already exists, which is fine!
+    pass
+
+# Safely add role to an existing users table if it's missing
+try:
+    cursor.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+    print("Added 'role' column to existing users table.")
+except sqlite3.OperationalError:
     pass
 
 conn.commit()

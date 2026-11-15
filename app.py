@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 import sqlite3
 from security import hash_password, verify_password
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, JWTManager
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, get_jwt, JWTManager
 
 app = Flask(__name__)
 
@@ -75,7 +75,10 @@ def get_single_recipe(recipe_id):
 @jwt_required()
 def update_recipe(recipe_id):
     user_id = get_jwt_identity()
-    print(f"User ID {user_id} is trying to update recipe {recipe_id}")
+    claims = get_jwt()
+    user_role = claims.get("role", "user")
+    
+    print(f"User ID {user_id} (Role: {user_role}) is trying to update recipe {recipe_id}")
 
     data = request.get_json() or {}
     title = data.get('title')
@@ -88,8 +91,8 @@ def update_recipe(recipe_id):
         db.close()
         return jsonify({"error": "Recipe not found"}), 404
         
-    # OWNERSHIP CHECK
-    if recipe['owner_id'] is not None and str(recipe['owner_id']) != str(user_id):
+    # ADMIN OR OWNER CHECK
+    if user_role != "admin" and recipe['owner_id'] is not None and str(recipe['owner_id']) != str(user_id):
         db.close()
         return jsonify({"error": "Forbidden: You do not own this recipe"}), 403
         
@@ -102,7 +105,10 @@ def update_recipe(recipe_id):
 @jwt_required()
 def delete_recipe(recipe_id):
     user_id = get_jwt_identity()
-    print(f"User ID {user_id} is trying to delete recipe {recipe_id}")
+    claims = get_jwt()
+    user_role = claims.get("role", "user")
+    
+    print(f"User ID {user_id} (Role: {user_role}) is trying to delete recipe {recipe_id}")
 
     db = get_db()
     recipe = db.execute('SELECT * FROM recipes WHERE id = ?', (recipe_id,)).fetchone()
@@ -111,8 +117,8 @@ def delete_recipe(recipe_id):
         db.close()
         return jsonify({"error": "Recipe not found"}), 404
         
-    # OWNERSHIP CHECK
-    if recipe['owner_id'] is not None and str(recipe['owner_id']) != str(user_id):
+    # ADMIN OR OWNER CHECK
+    if user_role != "admin" and recipe['owner_id'] is not None and str(recipe['owner_id']) != str(user_id):
         db.close()
         return jsonify({"error": "Forbidden: You do not own this recipe"}), 403
         
@@ -164,7 +170,7 @@ def login():
 
     db = get_db()
     user = db.execute(
-        "SELECT id, username, password_hash FROM users WHERE username = ?",
+        "SELECT id, username, password_hash, role FROM users WHERE username = ?",
         (username,)
     ).fetchone()
     db.close()
@@ -172,15 +178,19 @@ def login():
     if user is None or not verify_password(user["password_hash"], password):
         return jsonify({"error": "Invalid credentials"}), 401
 
-    # Normal 15-minute expiration
-    access_token = create_access_token(identity=str(user["id"]), expires_delta=timedelta(minutes=15))
+    # Generate the token and include the role in the claims
+    access_token = create_access_token(
+        identity=str(user["id"]),
+        additional_claims={"role": user["role"]}
+    )
 
     return jsonify({
         "message": "Login successful",
         "access_token": access_token,
         "user": {
             "id": user["id"],
-            "username": user["username"]
+            "username": user["username"],
+            "role": user["role"]
         }
     }), 200
 
